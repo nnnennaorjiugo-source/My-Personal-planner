@@ -1,4 +1,4 @@
--- Run this in your Supabase SQL editor
+-- Run this in your Supabase SQL editor now edited
 
 create table tasks (
   id text primary key,
