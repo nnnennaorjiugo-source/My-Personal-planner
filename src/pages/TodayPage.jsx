@@ -1,83 +1,120 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { db, getTaskStatuses, setTaskStatus, getTop3, setTop3, getWeekScores, setWeekScore } from '../lib/supabase'
 import { makeGCalLink } from '../lib/calendarSync'
 
 const todayKey = () => new Date().toISOString().slice(0, 10)
-const getWeekNum = (d = new Date()) => { const s = new Date(d.getFullYear(), 0, 1); return Math.ceil(((d - s) / 86400000 + s.getDay() + 1) / 7) }
 const todayName = () => new Date().toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 3)
 
 const DEFAULT_TASKS = [
-  { id: 't1', name: 'CKA troubleshooting session', tier: 'must', cat: 'c-k8s', weight: 20, priority: 1, startTime: '09:00', endTime: '10:30' },
-  { id: 't2', name: '3 KodeKloud K8s labs', tier: 'must', cat: 'c-k8s', weight: 18, priority: 1, startTime: '10:45', endTime: '12:00' },
-  { id: 't3', name: '3–5 interview questions (out loud)', tier: 'must', cat: 'c-int', weight: 12, priority: 2, startTime: '12:15', endTime: '13:00' },
-  { id: 't4', name: 'Lab architecture planning', tier: 'must', cat: 'c-lab', weight: 10, priority: 2, startTime: '13:00', endTime: '14:00' },
-  { id: 't5', name: '5 job applications (SE + NL)', tier: 'should', cat: 'c-job', weight: 12, priority: 2, startTime: '20:00', endTime: '21:00' },
-  { id: 't6', name: 'Daily DevOps study (1.5 hrs)', tier: 'should', cat: 'c-cert', weight: 15, priority: 3, startTime: '08:30', endTime: '10:00' },
-  { id: 't7', name: 'Evening review + set tomorrow Top 3', tier: 'should', cat: 'c-adm', weight: 6, priority: 3, startTime: '21:00', endTime: '21:15' },
-  { id: 't8', name: 'Content plan ideas', tier: 'will', cat: 'c-cnt', weight: 6, priority: 0, startTime: '', endTime: '' },
-  { id: 't9', name: 'Online income research (30 min)', tier: 'will', cat: 'c-adm', weight: 5, priority: 0, startTime: '', endTime: '' },
+  { id: 't1', name: 'CKA troubleshooting session', tier: 'must', cat: 'c-k8s', weight: 20, priority: 1, start_time: '09:00', end_time: '10:30' },
+  { id: 't2', name: '3 KodeKloud K8s labs', tier: 'must', cat: 'c-k8s', weight: 18, priority: 1, start_time: '10:45', end_time: '12:00' },
+  { id: 't3', name: '3–5 interview questions (out loud)', tier: 'must', cat: 'c-int', weight: 12, priority: 2, start_time: '12:15', end_time: '13:00' },
+  { id: 't4', name: 'Lab architecture planning', tier: 'must', cat: 'c-lab', weight: 10, priority: 2, start_time: '13:00', end_time: '14:00' },
+  { id: 't5', name: '5 job applications (SE + NL)', tier: 'should', cat: 'c-job', weight: 12, priority: 2, start_time: '20:00', end_time: '21:00' },
+  { id: 't6', name: 'Daily DevOps study (1.5 hrs)', tier: 'should', cat: 'c-cert', weight: 15, priority: 3, start_time: '08:30', end_time: '10:00' },
+  { id: 't7', name: 'Evening review + set tomorrow Top 3', tier: 'should', cat: 'c-adm', weight: 6, priority: 3, start_time: '21:00', end_time: '21:15' },
+  { id: 't8', name: 'Content plan ideas', tier: 'will', cat: 'c-cnt', weight: 6, priority: 0, start_time: '', end_time: '' },
+  { id: 't9', name: 'Online income research (30 min)', tier: 'will', cat: 'c-adm', weight: 5, priority: 0, start_time: '', end_time: '' },
 ]
 
 export default function TodayPage({ cats }) {
-  const [tasks, setTasks] = useState(() => JSON.parse(localStorage.getItem('h_tasks_v4') || JSON.stringify(DEFAULT_TASKS)))
-  const [statuses, setStatuses] = useState(() => JSON.parse(localStorage.getItem(`h_ts_${todayKey()}`) || '{}'))
-  const [weekScores] = useState(() => JSON.parse(localStorage.getItem('h_ws4') || '{}'))
-  const [top3, setTop3] = useState(() => JSON.parse(localStorage.getItem(`h_top3_${todayKey()}`) || '[null,null,null]'))
-  const [modal, setModal] = useState(null) // null | { mode: 'add'|'edit', tier?, task? }
+  const [tasks, setTasks] = useState([])
+  const [statuses, setStatuses] = useState({})
+  const [weekScores, setWeekScores] = useState({})
+  const [top3, setTop3State] = useState([null, null, null])
+  const [modal, setModal] = useState(null)
   const [form, setForm] = useState({})
+  const [loading, setLoading] = useState(true)
   const dragId = useRef(null)
+  const date = todayKey()
 
-  const saveTasks = (t) => { setTasks(t); localStorage.setItem('h_tasks_v4', JSON.stringify(t)) }
-  const saveStatuses = (s) => { setStatuses(s); localStorage.setItem(`h_ts_${todayKey()}`, JSON.stringify(s)); saveWeekScore(s) }
-  const saveTop3 = (t) => { setTop3(t); localStorage.setItem(`h_top3_${todayKey()}`, JSON.stringify(t)) }
+  // Load all data
+  useEffect(() => {
+    async function load() {
+      try {
+        const [t, s, t3, ws] = await Promise.all([
+          db.getAll('tasks'),
+          getTaskStatuses(date),
+          getTop3(date),
+          getWeekScores(),
+        ])
+        setTasks(t.length > 0 ? t : DEFAULT_TASKS)
+        setStatuses(s)
+        setTop3State(t3)
+        setWeekScores(ws)
+        // Seed default tasks if none exist
+        if (t.length === 0) {
+          for (const task of DEFAULT_TASKS) await db.upsert('tasks', task)
+        }
+      } catch (e) {
+        console.error('Load error:', e)
+        setTasks(DEFAULT_TASKS)
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [])
 
-  const saveWeekScore = (s) => {
-    const score = tasks.reduce((acc, t) => { const st = s[t.id] || 'none'; return acc + (st === 'done' ? t.weight : st === 'half' ? Math.round(t.weight * 0.5) : 0) }, 0)
-    const max = tasks.reduce((acc, t) => acc + t.weight, 0)
-    const pct = max ? Math.round(score / max * 100) : 0
-    const ws = JSON.parse(localStorage.getItem('h_ws4') || '{}')
-    ws[todayName()] = pct
-    localStorage.setItem('h_ws4', JSON.stringify(ws))
-  }
+  const getCat = (id) => cats.find(c => c.id === id) || { name: 'Other', color: '#888' }
 
-  const cycleStatus = (id) => {
-    const cur = statuses[id] || 'none'
-    const next = cur === 'none' ? 'half' : cur === 'half' ? 'done' : 'none'
-    saveStatuses({ ...statuses, [id]: next })
-  }
-
-  // Score
-  const score = tasks.reduce((acc, t) => { const s = statuses[t.id] || 'none'; return acc + (s === 'done' ? t.weight : s === 'half' ? Math.round(t.weight * 0.5) : 0) }, 0)
+  // Score calculation
+  const score = tasks.reduce((acc, t) => {
+    const s = statuses[t.id] || 'none'
+    return acc + (s === 'done' ? t.weight : s === 'half' ? Math.round(t.weight * 0.5) : 0)
+  }, 0)
   const max = tasks.reduce((acc, t) => acc + t.weight, 0)
   const pct = max ? Math.round(score / max * 100) : 0
   const grade = pct >= 85 ? 'A' : pct >= 70 ? 'B' : pct >= 55 ? 'C' : pct > 0 ? 'D' : '—'
   const streak = Object.values(weekScores).filter(v => v >= 55).length
 
-  const getCat = (id) => cats.find(c => c.id === id) || { name: 'Other', color: '#888' }
+  // Save score whenever it changes
+  useEffect(() => {
+    if (!loading) setWeekScore(todayName(), pct)
+  }, [pct, loading])
 
-  // Drag
-  const onDragStart = (e, id) => { dragId.current = id; setTimeout(() => document.getElementById(`tc-${id}`)?.classList.add('dragging'), 0) }
-  const onDragEnd = (id) => { document.getElementById(`tc-${id}`)?.classList.remove('dragging'); dragId.current = null }
+  const cycleStatus = async (id) => {
+    const cur = statuses[id] || 'none'
+    const next = cur === 'none' ? 'half' : cur === 'half' ? 'done' : 'none'
+    setStatuses(prev => ({ ...prev, [id]: next }))
+    await setTaskStatus(id, date, next)
+  }
+
+  // Drag & Drop
+  const onDragStart = (e, id) => { dragId.current = id; setTimeout(() => document.getElementById('tc-' + id)?.classList.add('dragging'), 0) }
+  const onDragEnd = (id) => { document.getElementById('tc-' + id)?.classList.remove('dragging'); dragId.current = null }
   const onDragOver = (e) => { e.preventDefault(); e.currentTarget.classList.add('drag-over') }
   const onDragLeave = (e) => e.currentTarget.classList.remove('drag-over')
-  const onDrop = (e, slot) => {
+  const onDrop = async (e, slot) => {
     e.preventDefault(); e.currentTarget.classList.remove('drag-over')
     if (!dragId.current) return
     const newTop3 = [...top3].map(id => id === dragId.current ? null : id)
     newTop3[slot] = dragId.current
-    saveTop3(newTop3)
+    setTop3State(newTop3)
+    await setTop3(date, newTop3)
   }
-  const removeTop3 = (slot) => { const n = [...top3]; n[slot] = null; saveTop3(n) }
+  const removeTop3 = async (slot) => {
+    const n = [...top3]; n[slot] = null
+    setTop3State(n)
+    await setTop3(date, n)
+  }
 
-  // Modal
-  const openAdd = (tier) => { setForm({ tier: tier || 'must', cat: cats[0]?.id || '', weight: 10, priority: 0, startTime: '', endTime: '' }); setModal({ mode: 'add' }) }
+  // Task CRUD
+  const openAdd = (tier) => { setForm({ tier: tier || 'must', cat: cats[0]?.id || '', weight: 10, priority: 0, start_time: '', end_time: '' }); setModal({ mode: 'add' }) }
   const openEdit = (task) => { setForm({ ...task }); setModal({ mode: 'edit', task }) }
-  const saveTask = () => {
+  const saveTask = async () => {
     if (!form.name?.trim()) return
-    if (modal.mode === 'add') saveTasks([...tasks, { id: 't' + Date.now(), ...form, weight: Number(form.weight) || 10, priority: Number(form.priority) || 0 }])
-    else saveTasks(tasks.map(t => t.id === modal.task.id ? { ...t, ...form, weight: Number(form.weight), priority: Number(form.priority) } : t))
+    const task = { ...form, id: modal.mode === 'add' ? 't' + Date.now() : modal.task.id, weight: Number(form.weight) || 10, priority: Number(form.priority) || 0 }
+    await db.upsert('tasks', task)
+    setTasks(prev => modal.mode === 'add' ? [...prev, task] : prev.map(t => t.id === task.id ? task : t))
     setModal(null)
   }
-  const deleteTask = (id) => { saveTasks(tasks.filter(t => t.id !== id)); saveTop3(top3.map(tid => tid === id ? null : tid)) }
+  const deleteTask = async (id) => {
+    await db.delete('tasks', id)
+    setTasks(prev => prev.filter(t => t.id !== id))
+    setTop3State(prev => prev.map(tid => tid === id ? null : tid))
+    await setTop3(date, top3.map(tid => tid === id ? null : tid))
+  }
 
   const tiers = [
     { id: 'must', label: '🔴 Must do', color: 'var(--flame)' },
@@ -85,8 +122,9 @@ export default function TodayPage({ cats }) {
     { id: 'will', label: '🟢 Will do', color: 'var(--accent2)' },
   ]
 
-  const d = new Date()
+  if (loading) return <div style={{ color: 'var(--text3)', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, padding: '40px 0' }}>Loading tasks...</div>
 
+  const d = new Date()
   return (
     <div>
       <div className="page-title">{d.toLocaleDateString('en-GB', { weekday: 'long' })}</div>
@@ -104,7 +142,7 @@ export default function TodayPage({ cats }) {
               <div key={i} className={`top3-slot${t ? ' filled' : ''}`} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={e => onDrop(e, i)}>
                 <div className={`top3-rank r${i + 1}`}>#{i + 1}</div>
                 <div className={`top3-text${t ? ' filled' : ''}`}>{t ? `${t.name}${s === 'done' ? ' ✓' : s === 'half' ? ' ½' : ''}` : 'Drop a task here'}</div>
-                {t && <button className="top3-remove" onClick={() => removeTop3(i)} style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 14, padding: '2px 6px', borderRadius: 6 }}>✕</button>}
+                {t && <button onClick={() => removeTop3(i)} style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 14, padding: '2px 6px', borderRadius: 6 }}>✕</button>}
               </div>
             )
           })}
@@ -118,9 +156,9 @@ export default function TodayPage({ cats }) {
         <div className="stat"><div className="stat-val">{grade}</div><div className="stat-lbl">Grade</div></div>
         <div className="stat"><div className="stat-val">{streak}</div><div className="stat-lbl">Streak</div></div>
       </div>
-      <div className="progress"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
+      <div className="progress"><div className="progress-fill" style={{ width: pct + '%' }} /></div>
 
-      {/* Task tiers */}
+      {/* Tasks */}
       {tiers.map(tier => (
         <div className="sec" key={tier.id}>
           <div className="sec-header">
@@ -130,9 +168,9 @@ export default function TodayPage({ cats }) {
           {tasks.filter(t => t.tier === tier.id).sort((a, b) => (b.priority || 0) - (a.priority || 0)).map(t => {
             const s = statuses[t.id] || 'none'
             const cat = getCat(t.cat)
-            const calLink = t.startTime ? makeGCalLink({ title: t.name, startTime: t.startTime, endTime: t.endTime }) : null
+            const calLink = (t.start_time || t.startTime) ? makeGCalLink({ title: t.name, startTime: t.start_time || t.startTime, endTime: t.end_time || t.endTime }) : null
             return (
-              <div key={t.id} id={`tc-${t.id}`} className={`task-card p${t.priority || 0} status-${s}`} draggable onDragStart={e => onDragStart(e, t.id)} onDragEnd={() => onDragEnd(t.id)}>
+              <div key={t.id} id={'tc-' + t.id} className={`task-card p${t.priority || 0} status-${s}`} draggable onDragStart={e => onDragStart(e, t.id)} onDragEnd={() => onDragEnd(t.id)}>
                 <div className="drag-handle">⠿</div>
                 <div className={`task-check ${s}`} onClick={() => cycleStatus(t.id)} title={s === 'none' ? 'Tap: half done' : s === 'half' ? 'Tap: fully done' : 'Tap: unmark'}>
                   {s === 'done' ? '✓' : s === 'half' ? '½' : ''}
@@ -142,7 +180,7 @@ export default function TodayPage({ cats }) {
                   <div className="task-meta">
                     <span className="tag" style={{ background: cat.color + '18', color: cat.color }}>{cat.name}</span>
                     <span className="pts-tag">{t.weight}pt</span>
-                    {t.startTime && <span className="time-tag">{t.startTime}{t.endTime ? `–${t.endTime}` : ''}</span>}
+                    {(t.start_time || t.startTime) && <span className="time-tag">{t.start_time || t.startTime}{(t.end_time || t.endTime) ? '–' + (t.end_time || t.endTime) : ''}</span>}
                     {s === 'half' && <span className="half-badge">½ done</span>}
                     {s === 'done' && <span className="done-badge">✓ done</span>}
                   </div>
@@ -155,6 +193,9 @@ export default function TodayPage({ cats }) {
               </div>
             )
           })}
+          {tasks.filter(t => t.tier === tier.id).length === 0 && (
+            <div style={{ color: 'var(--text3)', fontSize: 12, padding: '10px 0', fontFamily: 'JetBrains Mono, monospace' }}>No tasks here</div>
+          )}
         </div>
       ))}
 
@@ -190,10 +231,10 @@ export default function TodayPage({ cats }) {
             </div>
             <div className="form-row">
               <div className="form-group"><label className="form-label">Start time</label>
-                <input value={form.startTime || ''} onChange={e => setForm({ ...form, startTime: e.target.value })} placeholder="09:00" />
+                <input value={form.start_time || form.startTime || ''} onChange={e => setForm({ ...form, start_time: e.target.value })} placeholder="09:00" />
               </div>
               <div className="form-group"><label className="form-label">End time</label>
-                <input value={form.endTime || ''} onChange={e => setForm({ ...form, endTime: e.target.value })} placeholder="10:30" />
+                <input value={form.end_time || form.endTime || ''} onChange={e => setForm({ ...form, end_time: e.target.value })} placeholder="10:30" />
               </div>
             </div>
             <div className="btn-row">

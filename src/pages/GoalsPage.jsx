@@ -1,16 +1,16 @@
-// GoalsPage.jsx
 import React, { useState, useEffect } from 'react'
+import { db } from '../lib/supabase'
 
 const getWeekNum = (d = new Date()) => { const s = new Date(d.getFullYear(), 0, 1); return Math.ceil(((d - s) / 86400000 + s.getDay() + 1) / 7) }
-const weeklyPeriods = () => { const w = getWeekNum(); return Array.from({ length: 8 }, (_, i) => `Week ${w + i - 1}`) }
+const weeklyPeriods = () => { const w = getWeekNum(); return Array.from({ length: 8 }, (_, i) => 'Week ' + (w + i - 1)) }
 const monthlyPeriods = ['May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const quarterlyPeriods = ['Q2 2026', 'Q3 2026', 'Q4 2026', 'Q1 2027']
 
 const DEFAULT_GOALS = [
-  { id: 'g1', name: 'Content calendar done', term: 'weekly', period: `Week ${getWeekNum() + 1}`, cat: 'c-cnt', priority: 1, deadline: 'May 21', done: false },
-  { id: 'g2', name: 'Home lab architecture drafted', term: 'weekly', period: `Week ${getWeekNum() + 1}`, cat: 'c-lab', priority: 1, deadline: 'May 21', done: false },
-  { id: 'g3', name: 'Swedbank / bank ID sorted', term: 'weekly', period: `Week ${getWeekNum()}`, cat: 'c-adm', priority: 1, deadline: 'May 16', done: false },
-  { id: 'g4', name: 'CNCF paper submitted', term: 'weekly', period: `Week ${getWeekNum() + 1}`, cat: 'c-cert', priority: 1, deadline: 'May 25', done: false },
+  { id: 'g1', name: 'Content calendar done', term: 'weekly', period: 'Week ' + (getWeekNum() + 1), cat: 'c-cnt', priority: 1, deadline: 'May 21', done: false },
+  { id: 'g2', name: 'Home lab architecture drafted', term: 'weekly', period: 'Week ' + (getWeekNum() + 1), cat: 'c-lab', priority: 1, deadline: 'May 21', done: false },
+  { id: 'g3', name: 'Swedbank / bank ID sorted', term: 'weekly', period: 'Week ' + getWeekNum(), cat: 'c-adm', priority: 1, deadline: 'May 16', done: false },
+  { id: 'g4', name: 'CNCF paper submitted', term: 'weekly', period: 'Week ' + (getWeekNum() + 1), cat: 'c-cert', priority: 1, deadline: 'May 25', done: false },
   { id: 'g5', name: 'First content piece LIVE', term: 'monthly', period: 'May', cat: 'c-cnt', priority: 1, deadline: 'May 31', done: false },
   { id: 'g6', name: 'Home lab continuously running', term: 'monthly', period: 'May', cat: 'c-lab', priority: 2, deadline: 'May 31', done: false },
   { id: 'g7', name: 'MLOps learning started', term: 'monthly', period: 'June', cat: 'c-cert', priority: 3, deadline: 'June 1', done: false },
@@ -19,31 +19,65 @@ const DEFAULT_GOALS = [
   { id: 'g10', name: 'US job applications push', term: 'quarterly', period: 'Q3 2026', cat: 'c-job', priority: 1, deadline: 'August', done: false },
 ]
 
-export function GoalsPage({ cats, initialView, onViewChange }) {
-  const [goals, setGoals] = useState(() => JSON.parse(localStorage.getItem('h_goals_v3') || JSON.stringify(DEFAULT_GOALS)))
+export default function GoalsPage({ cats, initialView, onViewChange }) {
+  const [goals, setGoals] = useState([])
   const [view, setView] = useState(initialView || 'weekly')
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState({})
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => { if (initialView) setView(initialView) }, [initialView])
 
-  const saveGoals = (g) => { setGoals(g); localStorage.setItem('h_goals_v3', JSON.stringify(g)) }
+  useEffect(() => {
+    async function load() {
+      try {
+        const data = await db.getAll('goals')
+        if (data.length > 0) setGoals(data)
+        else {
+          setGoals(DEFAULT_GOALS)
+          for (const g of DEFAULT_GOALS) await db.upsert('goals', g)
+        }
+      } catch (e) { setGoals(DEFAULT_GOALS) }
+      finally { setLoading(false) }
+    }
+    load()
+  }, [])
+
   const getPeriods = (t) => t === 'weekly' ? weeklyPeriods() : t === 'monthly' ? monthlyPeriods : quarterlyPeriods
   const getCat = (id) => cats.find(c => c.id === id) || { name: 'Other', color: '#888' }
   const priColors = { 1: 'var(--flame)', 2: 'var(--gold)', 3: 'var(--accent2)' }
-
   const filtered = goals.filter(g => g.term === view)
   const periods = [...new Set(filtered.map(g => g.period))].sort((a, b) => getPeriods(view).indexOf(a) - getPeriods(view).indexOf(b))
 
   const switchView = (v) => { setView(v); onViewChange?.(v) }
-  const toggleGoal = (id) => saveGoals(goals.map(g => g.id === id ? { ...g, done: !g.done } : g))
-  const openAdd = () => { setForm({ term: view, period: getPeriods(view)[0], cat: cats[0]?.id || '', priority: 2, deadline: '', name: '' }); setModal({ mode: 'add' }) }
-  const save = () => {
+
+  const toggleGoal = async (id) => {
+    const g = goals.find(g => g.id === id)
+    if (!g) return
+    const updated = { ...g, done: !g.done }
+    setGoals(prev => prev.map(x => x.id === id ? updated : x))
+    await db.upsert('goals', updated)
+  }
+
+  const openAdd = () => {
+    setForm({ term: view, period: getPeriods(view)[0], cat: cats[0]?.id || '', priority: 2, deadline: '', name: '' })
+    setModal({ mode: 'add' })
+  }
+
+  const save = async () => {
     if (!form.name?.trim()) return
-    if (modal.mode === 'add') saveGoals([...goals, { id: 'g' + Date.now(), ...form, done: false }])
-    else saveGoals(goals.map(g => g.id === modal.goal.id ? { ...g, ...form } : g))
+    const goal = { ...form, id: modal.mode === 'add' ? 'g' + Date.now() : modal.goal?.id, done: false }
+    await db.upsert('goals', goal)
+    setGoals(prev => modal.mode === 'add' ? [...prev, goal] : prev.map(g => g.id === goal.id ? goal : g))
     setModal(null)
   }
+
+  const deleteGoal = async (id) => {
+    await db.delete('goals', id)
+    setGoals(prev => prev.filter(g => g.id !== id))
+  }
+
+  if (loading) return <div style={{ color: 'var(--text3)', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, padding: '40px 0' }}>Loading goals...</div>
 
   return (
     <div>
@@ -51,13 +85,13 @@ export function GoalsPage({ cats, initialView, onViewChange }) {
       <div className="page-sub">Week by week · Month by month · Quarterly</div>
       <div className="filters">
         {['weekly', 'monthly', 'quarterly'].map(v => (
-          <button key={v} className={`filter-btn${view === v ? ' active' : ''}`} onClick={() => switchView(v)}>
+          <button key={v} className={'filter-btn' + (view === v ? ' active' : '')} onClick={() => switchView(v)}>
             {v.charAt(0).toUpperCase() + v.slice(1)}
           </button>
         ))}
       </div>
 
-      {periods.length === 0 && <div style={{ color: 'var(--text3)', padding: '20px 0', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>No {view} goals yet — add one below</div>}
+      {periods.length === 0 && <div style={{ color: 'var(--text3)', padding: '20px 0', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>No {view} goals yet</div>}
 
       {periods.map(period => {
         const pg = filtered.filter(g => g.period === period).sort((a, b) => (a.priority || 9) - (b.priority || 9))
@@ -73,9 +107,9 @@ export function GoalsPage({ cats, initialView, onViewChange }) {
               return (
                 <div key={g.id} className="goal-card">
                   <div className="priority-dot" style={{ background: priColors[g.priority] || 'var(--text3)' }} />
-                  <div className={`goal-check${g.done ? ' done' : ''}`} onClick={() => toggleGoal(g.id)}>{g.done ? '✓' : ''}</div>
+                  <div className={'goal-check' + (g.done ? ' done' : '')} onClick={() => toggleGoal(g.id)}>{g.done ? '✓' : ''}</div>
                   <div style={{ flex: 1 }}>
-                    <div className={`goal-name${g.done ? ' done' : ''}`}>{g.name}</div>
+                    <div className={'goal-name' + (g.done ? ' done' : '')}>{g.name}</div>
                     <div className="goal-meta">
                       <span style={{ background: cat.color + '18', color: cat.color, padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>{cat.name}</span>
                       {g.deadline && <span>📅 {g.deadline}</span>}
@@ -83,7 +117,7 @@ export function GoalsPage({ cats, initialView, onViewChange }) {
                   </div>
                   <div style={{ display: 'flex', gap: 4 }}>
                     <button className="icon-btn" onClick={() => { setForm({ ...g }); setModal({ mode: 'edit', goal: g }) }}>✏</button>
-                    <button className="icon-btn del" onClick={() => saveGoals(goals.filter(x => x.id !== g.id))}>🗑</button>
+                    <button className="icon-btn del" onClick={() => deleteGoal(g.id)}>🗑</button>
                   </div>
                 </div>
               )
@@ -138,4 +172,3 @@ export function GoalsPage({ cats, initialView, onViewChange }) {
     </div>
   )
 }
-export default GoalsPage
